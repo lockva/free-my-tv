@@ -30,17 +30,8 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 /**
- * The screensaver, in the same style as the home screen:
- *  - the recommendations' photos in full screen, one every 30 s, with a slow zoom and pan (the "Ken Burns" effect of
- *    the Apple TV photos) and a crossfade between them; each photo is loaded 10% larger than the screen, so the zoom
- *    never upscales it;
- *  - top right, like the iPhone lock screen: the date with the weather, the big Liquid Glass clock (the photo shows
- *    through the digits, bent at the edges; Shaders.GLASS_TEXT) and the compact prices;
- *  - bottom left, the photo's caption: the time-of-day label ("TONIGHT"), the title, and genre · runtime · service.
- * Dark scrims only where there is text, stronger where the photo is bright. Any key exits (as on Apple TV); with Watch
- * from the screensaver on (Prefs.saverWatch), OK first opens the title in its app, and the caption says so.
- * With your own photos on (Photos), those instead, without a caption.
- * Without photos (no TMDB key, or before the first fetch): the big clock over the night aurora.
+ * Minimal black screensaver: date in the upper corner and a fine-weight clock in the lower corner. Optional prices or
+ * the currently playing title remain quiet in the lower left. No weather, photo decoding or animation runs here.
  */
 final class DreamView extends View implements Choreographer.FrameCallback, HomeData.Listener, Recs.Listener {
     private static final long SHOW_MS = 30_000, FADE_MS = 3_000, FIRST_MS = 1_600;
@@ -142,14 +133,10 @@ final class DreamView extends View implements Choreographer.FrameCallback, HomeD
     private final Runnable tick = new Runnable() {
         @Override public void run() {
             if (!running) return;
-            playing.start();   // the listener allowed after the screensaver started (a no-op once watching)
+            playing.start();
             data.refreshIfStale();
-            recs.refreshIfStale();
-            recs.prefetchAll();
-            dirty = true;
-            chromeDirty = true;
-            prepareNext();
-            handler.postDelayed(this, 60_000);
+            handler.postDelayed(this, 60_000L - System.currentTimeMillis() % 60_000L + 80);
+            invalidate();
         }
     };
 
@@ -180,20 +167,10 @@ final class DreamView extends View implements Choreographer.FrameCallback, HomeD
         if (running) return;
         running = true;
         if (worker.isShutdown()) worker = Executors.newSingleThreadExecutor();
-        startedAt = clock();
-        lastFrame = 0;
-        failed.clear();
-        fallback = photos().isEmpty();
         data.addListener(this);
-        recs.addListener(this);
         data.refreshIfStale();
-        recs.refreshIfStale();
-        recs.prefetchAll();
-        Photos.importInbox(getContext(), () -> { if (running) prepareNext(); });
-        prepareNext();
-        handler.postDelayed(tick, 60_000);
+        handler.postDelayed(tick, 60_000L - System.currentTimeMillis() % 60_000L + 80);
         playing.start();
-        Choreographer.getInstance().postFrameCallback(this);
         invalidate();
     }
 
@@ -244,16 +221,16 @@ final class DreamView extends View implements Choreographer.FrameCallback, HomeD
         content.setPosition(0, 0, w, h);
         chrome.setPosition(0, 0, w, h);
         // Without photos (the clock over the aurora).
-        datePaint = Ui.text(Ui.semibold, 36 * k, 0xD9FFFFFF);
+        datePaint = Ui.text(Ui.light, 22 * k, 0xD9FFFFFF);
         datePaint.setTextAlign(Paint.Align.CENTER);
-        clockPaint = Ui.numbers(Ui.thin, 280 * k, 0xF2FFFFFF);
-        clockPaint.setTextAlign(Paint.Align.CENTER);
+        clockPaint = Ui.numbers(Ui.thin, 108 * k, 0xF2FFFFFF);
+        clockPaint.setTextAlign(Paint.Align.RIGHT);
         clockPaint.setLetterSpacing(-0.01f);
         weatherPaint = Ui.numbers(Ui.medium, 30 * k, 0xC7FFFFFF);
         weatherDim = Ui.numbers(Ui.regular, 28 * k, 0x80FFFFFF);
         quotePaint = Ui.numbers(Ui.medium, 24 * k, 0x99FFFFFF);
-        stalePaint = Ui.text(Ui.regular, 20 * k, 0x59FFFFFF);
-        stalePaint.setTextAlign(Paint.Align.CENTER);
+        stalePaint = Ui.text(Ui.regular, 18 * k, 0x59FFFFFF);
+        stalePaint.setTextAlign(Paint.Align.LEFT);
         // With photos: the corner (date, clock, prices) and the caption.
         cornerDate = Ui.numbers(Ui.semibold, 30 * k, 0xEBFFFFFF);
         cornerQuote = Ui.numbers(Ui.regular, 23 * k, 0xC7FFFFFF);
@@ -440,43 +417,20 @@ final class DreamView extends View implements Choreographer.FrameCallback, HomeD
 
     @Override protected void onDraw(Canvas canvas) {
         if (w == 0) return;
-        long up = clock();
         long now = System.currentTimeMillis();
         if (now / 60_000 != minute) {
             minute = now / 60_000;
             clock = Ui.clock(now);
             date = Ui.date(now);
-            dirty = true;
-            chromeDirty = true;
         }
-        if (running) advance(up);
-        if (!glassFor.equals(clock)) buildGlass(clock);
-
-        float first = current == null ? 0 : fadeIn(up - firstAt, FIRST_MS);
-        if (current == null || first < 1) {
-            if (fallback) drawFallback(canvas, up, current == null ? 1 : 1 - first);
-            else canvas.drawRect(0, 0, w, h, black);
-        }
-        if (current == null) return;
-        if (fallback && first >= 1) fallback = false;
-
-        place(current, up, placeA);
-        float e = incoming == null ? 0 : fadeIn(up - incoming.startedAt, FADE_MS);
-        drawPhoto(canvas, current, placeA, first);
-        if (incoming != null) {
-            place(incoming, up, placeB);
-            drawPhoto(canvas, incoming, placeB, e);
-        }
-
-        if (chromeDirty) recordChrome();
-        chrome.setAlpha(first);
-        chrome.draw(canvas);
-        if (playingCorner != null) {
-            float x = RIGHT * k - playingCornerWidth - cornerCap * 0.6f - NowPlaying.barsWidth(cornerCap);
-            drawBars(canvas, x, cornerBase, cornerCap, cornerQuote.getColor(), first);
-        }
-        drawGlass(canvas, first, e);
-        drawCaptions(canvas, up);
+        canvas.drawRect(0, 0, w, h, black);
+        float right = w - MARGIN * k;
+        float dateBase = h - 82 * k - Ui.cap(clockPaint) - 18 * k;
+        float clockBase = h - 62 * k;
+        float clockCenter = right - clockPaint.measureText(clock) / 2;
+        canvas.drawText(date, clockCenter, dateBase, datePaint);
+        canvas.drawText(clock, right, clockBase, clockPaint);
+        drawMinimalDetails(canvas);
     }
 
     /** What an app is playing, cut to fit the corner and the bottom line: once per title, not while recording. */
@@ -490,7 +444,7 @@ final class DreamView extends View implements Choreographer.FrameCallback, HomeD
         playingCorner = TextUtils.ellipsize(now, fit, 860 * k, TextUtils.TruncateAt.END).toString();
         playingCornerWidth = cornerQuote.measureText(playingCorner);
         fit.set(quotePaint);
-        playingBottom = TextUtils.ellipsize(now, fit, w - 2 * MARGIN * k - 60 * k, TextUtils.TruncateAt.END).toString();
+        playingBottom = TextUtils.ellipsize(now, fit, w * 0.42f, TextUtils.TruncateAt.END).toString();
         playingBottomWidth = quotePaint.measureText(playingBottom);
         cornerCap = Ui.cap(cornerQuote);
         bottomCap = Ui.cap(quotePaint);
@@ -500,6 +454,29 @@ final class DreamView extends View implements Choreographer.FrameCallback, HomeD
     private void drawBars(Canvas c, float x, float base, float cap, int color, float alpha) {
         barPaint.setColor(Ui.alpha(color, alpha));
         NowPlaying.drawBars(c, x, base, cap, barPaint, true, barRect);
+    }
+
+    /** Keep optional prices or the playing title at the lower left, clear of the clock at the lower right. */
+    private void drawMinimalDetails(Canvas c) {
+        float x = MARGIN * k, base = h - 72 * k;
+        if (playingBottom != null) {
+            c.drawText(playingBottom, x, base, quotePaint);
+            return;
+        }
+        int[] coins = HomeData.active();
+        int n = HomeData.coinCount();
+        if (n <= 0) return;
+        float cap = Ui.cap(quotePaint), gap = 8 * k, spacing = 26 * k;
+        for (int i = 0; i < n && i < coins.length; i++) {
+            String value = HomeData.price(data.prices[coins[i]]);
+            float glyph = Glyphs.width(getContext(), HomeData.COINS[coins[i]], cap);
+            Glyphs.coin(getContext(), c, HomeData.COINS[coins[i]], x + glyph / 2, base - cap / 2, cap, 0x80FFFFFF);
+            x += glyph + gap;
+            c.drawText(value, x, base, quotePaint);
+            x += quotePaint.measureText(value) + spacing;
+        }
+        String stale = HomeData.staleness(data.pricesAt, 5 * 60_000L);
+        if (!stale.isEmpty()) c.drawText(Ui.trf("quotes|{ago}", "ago", stale), MARGIN * k, base + 26 * k, stalePaint);
     }
 
     private static float fadeIn(long elapsed, long duration) {

@@ -25,6 +25,7 @@ import android.text.StaticLayout;
 import android.text.TextPaint;
 import android.text.TextUtils;
 import android.view.Choreographer;
+import android.view.Display;
 import android.view.KeyEvent;
 import android.view.View;
 import android.view.ViewGroup;
@@ -102,6 +103,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private static final int CAPTION_INK = 0xEBFFFFFF, CAPTION_CHIP = 0x80000000;
     private static final float L_DATE_BASE = 330, L_CLOCK_BASE = 540, L_WEATHER_BASE = 626, L_QUOTES_BASE = 694;
     private static final int L_INK = 0xFF1D1D1F, L_DIM = 0xFF6E6E73, L_FAINT = 0xFF8E8E93;
+    private static final String[] PERFORMANCE_LABELS = {"CPU", "RAM", "DISCO"};
     private static String[] tabs;
     private static int tabsGeneration = -1;
     private static final String[] TAB_KIND = {null, "movie", "tv"};
@@ -111,6 +113,10 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private final Scene scene = new Scene();
     private final HomeData data;
     private final Recs recs;
+    private Performance performance;
+    private int screenFps = 60;
+    private int liveFps = -1, fpsWindowFrames;
+    private long fpsWindowStartNanos;
     private final NowPlaying.Watch playing;
     private final Wallpaper wallpaper;
     private final Click click;
@@ -216,7 +222,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private int drawerInputs;          // how many leading items are inputs (the rest are shortcuts)
     private Spring[] drawerFocus = new Spring[0];
     private RectF[] drawerRects = new RectF[0];
-    private final RectF weatherCard = new RectF(), quotesCard = new RectF();
+    private final RectF weatherCard = new RectF(), performanceCard = new RectF();
     private final Spring drawer = new Spring(0.46f, 0.92f, 0);
     private boolean drawerOpen;
     private int drawerIndex;
@@ -245,6 +251,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private int w, h;
     private float k = 1;
     private String clockText = "", dateText = "", weatherLine = "";
+    private String screenResolution = "1080p";
     /** "Off in 42 min" next to the round buttons while the sleep timer runs (Settings > Sleep Timer); "" otherwise. */
     private String sleepText = "";
     private long weatherLineAt = -1;
@@ -256,6 +263,9 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private boolean okDown, backDown;
 
     private Paint labelPaint, metaPaint, clockPaint, buttonPaint, capsuleText, tipPaint, quotePaint, staleQuote;
+    private Paint performanceLabel, performanceValue, performanceTitle, performanceMeta, performanceFps, performanceUnit, performanceHint;
+    private final Paint performanceRule = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint performanceGauge = new Paint(Paint.ANTI_ALIAS_FLAG);
     private Paint rowTitle, drawerLabel, cardTitle, cardText, cardDim, cardDimRight, bigTemp, hourPaint, hourTemp, dayLow;
     private Paint pricePaint, changePaint, sheetTitle;
     private TextPaint titlePaint, gridLabel, toastPaint;
@@ -376,8 +386,11 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     HomeView(Activity a) {
         super(a);
         activity = a;
+        try { screenFps = Math.max(1, Math.round(a.getWindowManager().getDefaultDisplay().getRefreshRate())); }
+        catch (RuntimeException ignored) { }
         data = HomeData.get(a);
         recs = Recs.get(a);
+        performance = new Performance(a, this::performanceChanged);
         playing = new NowPlaying.Watch(a, () -> {
             fitPlaying();
             heroDirty = true;
@@ -436,6 +449,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     void resume() {
         if (running) return;
         running = true;
+        updateDisplayInfo(w, h);
         checkNight(false);
         boolean h24 = Prefs.clock24();
         if (h24 != clock24) {   // 12/24 hours changed in the TV's settings: the clock and the drawer's times again
@@ -464,6 +478,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         if (!again) reload();
         updatePalette();
         updatePicks();
+        syncPerformance();
         updateSleep();      // a timer just set in Settings shows at once, not at the next tick
         if (allAppsOnResume) {
             allAppsOnResume = false;
@@ -483,6 +498,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     void pause() {
         if (!running) return;
         running = false;
+        performance.stop();
         cancelReorder(true);
         handler.removeCallbacks(holdStart);
         okHeld = holdArmed = false;
@@ -499,6 +515,10 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
 
     void destroy() {
         pause();
+        if (performance != null) {
+            performance.close();
+            performance = null;
+        }
         if (launcherApps != null) launcherApps.unregisterCallback(packages);
         click.release();
     }
@@ -640,6 +660,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     @Override protected void onSizeChanged(int width, int height, int oldWidth, int oldHeight) {
         w = width;
         h = height;
+        updateDisplayInfo(width, height);
         k = w / 1920f;
         screen.set(0, 0, w, h);
         scene.setSize(w, h);
@@ -684,6 +705,14 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         lClock = Ui.numbers(Ui.light, 200 * k, L_INK);
         lClock.setLetterSpacing(-0.01f);
         lWeather = Ui.text(Ui.medium, 34 * k, L_DIM);
+        performanceLabel = Ui.text(Ui.semibold, 20 * k, L_DIM);
+        performanceValue = Ui.numbers(Ui.medium, 20 * k, L_INK);
+        performanceValue.setTextAlign(Paint.Align.RIGHT);
+        performanceTitle = Ui.text(Ui.medium, 25 * k, L_DIM);
+        performanceMeta = Ui.text(Ui.medium, 19 * k, L_FAINT);
+        performanceFps = Ui.numbers(Ui.light, 100 * k, L_INK);
+        performanceUnit = Ui.text(Ui.light, 42 * k, L_DIM);
+        performanceHint = Ui.text(Ui.medium, 21 * k, L_DIM);
         lClockQuote = Ui.numbers(Ui.medium, 28 * k, L_DIM);
         lCaption = new TextPaint(Ui.text(Ui.medium, 22 * k, CAPTION_INK));
         captionFrom = null;
@@ -737,6 +766,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
 
     @Override public void doFrame(long frameTimeNanos) {
         if (!running) return;
+        sampleFrameRate(frameTimeNanos);
         float dt = lastNanos == 0 ? 1 / 60f : Math.min(0.05f, (frameTimeNanos - lastNanos) / 1e9f);
         lastNanos = frameTimeNanos;
         long up = SystemClock.uptimeMillis();
@@ -866,6 +896,19 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private void updatePicks() {
         if (labelPaint == null) return;
         updateCards();
+        if (running) syncPerformance();
+    }
+
+    private void syncPerformance() {
+        if (performance == null) return;
+        if (running && drawerOpen) performance.start();
+        else performance.stop();
+    }
+
+    private void performanceChanged() {
+        handler.post(() -> {
+            if (running && drawerOpen) drawerLayer.invalidate();
+        });
     }
 
     private static boolean samePicks(List<Recs.Pick> a, List<Recs.Pick> b) {
@@ -1652,12 +1695,11 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             x += tw + gap;
         }
         float cardsTop = CARDS_TOP * k, split = left + (right - left) * 0.585f;
-        boolean wx = Prefs.weather(), qt = Prefs.quotes() && HomeData.active().length > 0;
-        // A card that is off gives its room to the other one.
-        weatherCard.set(left, cardsTop, qt ? split - 16 * k : right, cardsTop + CARDS_H * k);
-        quotesCard.set(wx ? split + 16 * k : left, cardsTop, right, cardsTop + CARDS_H * k);
+        boolean wx = Prefs.weather();
+        weatherCard.set(left, cardsTop, wx ? split - 16 * k : left, cardsTop + CARDS_H * k);
+        performanceCard.set(wx ? split + 16 * k : left, cardsTop, right, cardsTop + CARDS_H * k);
         snap(weatherCard);
-        snap(quotesCard);
+        snap(performanceCard);
         // The symbols at their sizes at rest and focused: drawing them never scales one.
         for (HomeApps.Item it : drawerItems) {
             Symbols.warm(getContext(), it.symbol, 34 * k);
@@ -1673,6 +1715,10 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private void openDrawer() {
         if (drawerItems.isEmpty()) return;
         drawerOpen = true;
+        liveFps = -1;
+        fpsWindowFrames = 0;
+        fpsWindowStartNanos = 0;
+        syncPerformance();
         drawer.target = 1;
         zone = Z_DRAWER;
         drawerIndex = shelf.isEmpty() ? 0 : nearest(drawerRects, tileRects[shelfIndex].centerX());
@@ -1682,6 +1728,10 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
 
     private void closeDrawer() {
         drawerOpen = false;
+        liveFps = -1;
+        fpsWindowFrames = 0;
+        fpsWindowStartNanos = 0;
+        syncPerformance();
         drawer.target = 0;
         zone = Z_SHELF;
         for (Spring f : drawerFocus) f.snap(0);   // the drawer goes away: its focus doesn't need to animate
@@ -1730,7 +1780,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         for (int i = 0; i < drawerItems.size(); i++) if (i != top) drawDrawerTile(c, i);
         if (top >= 0) drawDrawerTile(c, top);
         if (Prefs.weather()) drawWeatherCard(c, weatherCard);
-        if (Prefs.quotes() && HomeData.active().length > 0) drawQuotesCard(c, quotesCard);
+        drawPerformanceCard(c, performanceCard);
     }
 
     /** Square drawer button: symbol and name; an input with no device is dimmed. Focused: white, with dark text. */
@@ -2745,7 +2795,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         for (int i = shelfFirst; i < Math.min(shelf.size(), shelfFirst + shelfVisible); i++) out.add(a11yId(Z_SHELF, i));
         for (int i = 0; i < drawerItems.size(); i++) out.add(a11yId(Z_DRAWER, i));
         if (drawerOpen && Prefs.weather()) out.add(a11yId(WIDGETS, 0));
-        if (drawerOpen && Prefs.quotes() && HomeData.active().length > 0) out.add(a11yId(WIDGETS, 1));
+        if (drawerOpen) out.add(a11yId(WIDGETS, 1));
     }
 
     private String a11yText(int id) {
@@ -2765,7 +2815,9 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
                 }
                 return label(shelf, i);
             case Z_DRAWER: return label(drawerItems, i);
-            case WIDGETS: return i == 0 ? weatherText() : quotesText();
+            case WIDGETS: return i == 0 ? weatherText() : "Desempenho. Resolução " + screenResolution + ". "
+                    + (liveFps < 0 ? "Medindo FPS" : liveFps + " FPS") + ", máximo " + screenFps + " Hz. CPU "
+                    + performance.cpuText + ", RAM " + performance.memoryText + ", DISCO " + performance.storageText;
             default: return "";
         }
     }
@@ -2809,7 +2861,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
                 break;
             case WIDGETS:
                 if (!drawerOpen) return false;
-                a11yRect.set(i == 0 ? weatherCard : quotesCard);
+                a11yRect.set(i == 0 ? weatherCard : performanceCard);
                 dy = 0;
                 break;
             default:
@@ -2835,12 +2887,12 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         }
     }
 
-    /** The drawer's widgets that are on (0 weather, 1 quotes), with the drawer open. */
+    /** The drawer's weather (when enabled) and performance widgets. */
     private List<Integer> widgets() {
         List<Integer> out = new ArrayList<>();
         if (!drawerOpen) return out;
         if (Prefs.weather()) out.add(0);
-        if (Prefs.quotes() && HomeData.active().length > 0) out.add(1);
+        out.add(1);
         return out;
     }
 
@@ -3138,19 +3190,113 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         c.drawText(dateText, x - Ui.leftBearing(lDate, dateText), L_DATE_BASE * k, lDate);
         c.drawText(clockText, x - Ui.leftBearing(lClock, clockText), L_CLOCK_BASE * k, lClock);
         HomeData.Weather wx = data.weather;
-        if (!Prefs.weather() || Double.isNaN(wx.temp)) return;
-        if (data.weatherAt != weatherLineAt || Prefs.version != weatherLinePrefs || !Ui.language.equals(weatherLineLanguage)) {
-            weatherLineAt = data.weatherAt;
-            weatherLinePrefs = Prefs.version;
-            weatherLineLanguage = Ui.language;
-            weatherLine = HomeData.degrees(wx.temp) + "  " + HomeData.condition(wx.code, wx.isDay) + "   "
-                    + HomeData.highLow(wx, "  ");
+        if (Prefs.weather() && !Double.isNaN(wx.temp)) {
+            if (data.weatherAt != weatherLineAt || Prefs.version != weatherLinePrefs || !Ui.language.equals(weatherLineLanguage)) {
+                weatherLineAt = data.weatherAt;
+                weatherLinePrefs = Prefs.version;
+                weatherLineLanguage = Ui.language;
+                weatherLine = HomeData.degrees(wx.temp) + "  " + HomeData.condition(wx.code, wx.isDay) + "   "
+                        + HomeData.highLow(wx, "  ");
+            }
+            float size = 40 * k, base = L_WEATHER_BASE * k;
+            String symbol = Symbols.weather(wx.code, wx.isDay);
+            float sw = Symbols.width(getContext(), symbol, size);
+            Symbols.draw(getContext(), c, symbol, x + sw / 2, base - Ui.halfCap(lWeather), size, lWeather.getColor());
+            float textX = x + sw + 16 * k;
+            c.drawText(weatherLine, textX, base, lWeather);
         }
-        float size = 40 * k, base = L_WEATHER_BASE * k;
-        String symbol = Symbols.weather(wx.code, wx.isDay);
-        float sw = Symbols.width(getContext(), symbol, size);
-        Symbols.draw(getContext(), c, symbol, x + sw / 2, base - Ui.halfCap(lWeather), size, lWeather.getColor());
-        c.drawText(weatherLine, x + sw + 16 * k, base, lWeather);
+    }
+
+    /** Performance card beside weather: display refresh rate on the left and live resource use on the right. */
+    private void drawPerformanceCard(Canvas c, RectF r) {
+        drawerCard(c, r);
+        float pad = 30 * k, dividerX = r.left + r.width() * 0.56f;
+        float top = r.top + 48 * k;
+        performanceTitle.setColor(tone(L_INK, 0xFFFFFFFF));
+        performanceMeta.setColor(tone(L_FAINT, 0x99FFFFFF));
+        performanceUnit.setColor(tone(L_DIM, 0xFFFFFFFF));
+        performanceFps.setColor(drawerInk(1));
+        performanceHint.setColor(tone(L_DIM, 0xADFFFFFF));
+        performanceLabel.setColor(tone(L_DIM, 0xB3FFFFFF));
+        performanceValue.setColor(drawerInk(0.95f));
+
+        c.drawText(Ui.tr("Performance"), r.left + pad, top, performanceTitle);
+        cardDimRight.setColor(tone(L_FAINT, 0x99FFFFFF));
+        c.drawText("MiTV-AYFR0", r.right - pad, top, cardDimRight);
+        c.drawText(Ui.trf("Resolution: {value}", "value", screenResolution), r.left + pad, top + 28 * k, performanceMeta);
+
+        float leftX = r.left + pad;
+        float numberBase = r.top + 177 * k;
+        String fps = liveFps < 0 ? "--" : String.valueOf(liveFps);
+        c.drawText(fps, leftX, numberBase, performanceFps);
+        float fpsWidth = performanceFps.measureText(fps);
+        c.drawText("FPS", leftX + fpsWidth + 8 * k, numberBase - 9 * k, performanceUnit);
+        c.drawText(Ui.tr("Frames per second"), leftX, r.top + 211 * k, performanceTitle);
+
+        float gaugeLeft = leftX, gaugeTop = r.top + 238 * k;
+        float gaugeRight = dividerX - 26 * k, gaugeBottom = gaugeTop + 9 * k;
+        performanceGauge.setColor(tone(0x221D1D1F, 0x33FFFFFF));
+        tmp.set(gaugeLeft, gaugeTop, gaugeRight, gaugeBottom);
+        c.drawRoundRect(tmp, 5 * k, 5 * k, performanceGauge);
+        performanceGauge.setColor(tone(0xFF188038, 0xFF49C878));
+        float fpsProgress = liveFps < 0 ? 0 : Ui.clamp(liveFps / (float) Math.max(1, screenFps));
+        tmp.set(gaugeLeft, gaugeTop, gaugeLeft + (gaugeRight - gaugeLeft) * fpsProgress, gaugeBottom);
+        if (fpsProgress > 0) c.drawRoundRect(tmp, 5 * k, 5 * k, performanceGauge);
+        c.drawText(Ui.trf("Screen maximum: {n} Hz", "n", screenFps), leftX, r.top + 278 * k, performanceHint);
+
+        performanceRule.setColor(tone(0x1F1D1D1F, 0x33FFFFFF));
+        c.drawRect(dividerX, r.top + 26 * k, dividerX + k, r.bottom - 26 * k, performanceRule);
+        float labelX = dividerX + 24 * k, valueX = r.right - pad;
+        float rowStart = r.top + 112 * k, rowGap = 68 * k;
+        for (int i = 0; i < PERFORMANCE_LABELS.length; i++) {
+            String value = performance == null ? "--%" : i == 0 ? performance.cpuText
+                    : i == 1 ? performance.memoryText : performance.storageText;
+            float base = rowStart + i * rowGap;
+            c.drawText(PERFORMANCE_LABELS[i], labelX, base, performanceLabel);
+            c.drawText(value, valueX, base, performanceValue);
+        }
+    }
+
+    private static String resolutionLabel(int width, int height) {
+        int vertical = Math.min(width, height);
+        if (vertical >= 2160) return "4K";
+        if (vertical >= 1440) return "2K";
+        if (vertical >= 1080) return "1080p";
+        if (vertical >= 720) return "720p";
+        return vertical > 0 ? vertical + "p" : "--";
+    }
+
+    private void updateDisplayInfo(int width, int height) {
+        int displayWidth = width, displayHeight = height;
+        try {
+            Display display = activity.getWindowManager().getDefaultDisplay();
+            Display.Mode mode = display.getMode();
+            if (mode.getPhysicalWidth() > 0 && mode.getPhysicalHeight() > 0) {
+                displayWidth = mode.getPhysicalWidth();
+                displayHeight = mode.getPhysicalHeight();
+            }
+            screenFps = Math.max(1, Math.round(display.getRefreshRate()));
+        } catch (RuntimeException ignored) { }
+        screenResolution = resolutionLabel(displayWidth, displayHeight);
+    }
+
+    /** Counts the launcher's frame callbacks over one-second windows; no extra animation loop is started. */
+    private void sampleFrameRate(long frameTimeNanos) {
+        if (!drawerOpen) return;
+        if (fpsWindowStartNanos == 0) fpsWindowStartNanos = frameTimeNanos;
+        fpsWindowFrames++;
+        long elapsed = frameTimeNanos - fpsWindowStartNanos;
+        if (elapsed < 1_000_000_000L) return;
+        String oldResolution = screenResolution;
+        int oldMax = screenFps;
+        updateDisplayInfo(w, h);
+        int measured = Math.max(0, Math.min(screenFps, Math.round(fpsWindowFrames * 1_000_000_000f / elapsed)));
+        if (measured != liveFps || oldMax != screenFps || !oldResolution.equals(screenResolution)) {
+            liveFps = measured;
+            drawerLayer.invalidate();
+        }
+        fpsWindowFrames = 0;
+        fpsWindowStartNanos = frameTimeNanos;
     }
 
     /**
