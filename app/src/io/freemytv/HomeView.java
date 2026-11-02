@@ -223,7 +223,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private int drawerInputs;          // how many leading items are inputs (the rest are shortcuts)
     private Spring[] drawerFocus = new Spring[0];
     private RectF[] drawerRects = new RectF[0];
-    private final RectF weatherCard = new RectF(), performanceCard = new RectF();
+    private final RectF weatherCard = new RectF(), homePerformanceCard = new RectF();
     private final Spring drawer = new Spring(0.46f, 0.92f, 0);
     private boolean drawerOpen;
     private int drawerIndex;
@@ -676,6 +676,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         layoutShelf();
         layoutStatus();
         layoutDrawer();
+        layoutHomePerformance();
         layoutLight();
         hero = null;
         heroFrom = null;
@@ -904,13 +905,17 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
 
     private void syncPerformance() {
         if (performance == null) return;
-        if (running && drawerOpen) performance.start();
+        if (running) performance.start();
         else performance.stop();
     }
 
     private void performanceChanged() {
         handler.post(() -> {
-            if (running && drawerOpen) drawerLayer.invalidate();
+            if (running) {
+                updateDisplayInfo(w, h);
+                drawerLayer.invalidate();
+                heroLayer.invalidate();
+            }
         });
     }
 
@@ -1714,9 +1719,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         float cardsTop = CARDS_TOP * k, split = left + (right - left) * 0.585f;
         boolean wx = Prefs.weather();
         weatherCard.set(left, cardsTop, wx ? split - 16 * k : left, cardsTop + CARDS_H * k);
-        performanceCard.set(wx ? split + 16 * k : left, cardsTop, right, cardsTop + CARDS_H * k);
         snap(weatherCard);
-        snap(performanceCard);
         // The symbols at their sizes at rest and focused: drawing them never scales one.
         for (HomeApps.Item it : drawerItems) {
             Symbols.warm(getContext(), it.symbol, 34 * k);
@@ -1727,6 +1730,15 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         Symbols.warm(getContext(), "sunrise", 22 * k);
         Symbols.warm(getContext(), "sunset", 22 * k);
         drawerDirty = true;
+    }
+
+    /** Keep the dashboard card's original size, aligned to the right and centered on the home screen. */
+    private void layoutHomePerformance() {
+        float right = CONTENT_R * k;
+        float width = (CONTENT_R - MARGIN) * 0.415f * k - 16 * k;
+        float height = CARDS_H * k;
+        homePerformanceCard.set(right - width, (h - height) / 2f, right, (h + height) / 2f);
+        snap(homePerformanceCard);
     }
 
     private void openDrawer() {
@@ -1745,7 +1757,6 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
 
     private void closeDrawer() {
         drawerOpen = false;
-        liveFps = -1;
         fpsWindowFrames = 0;
         fpsWindowStartNanos = 0;
         syncPerformance();
@@ -1797,7 +1808,6 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         for (int i = 0; i < drawerItems.size(); i++) if (i != top) drawDrawerTile(c, i);
         if (top >= 0) drawDrawerTile(c, top);
         if (Prefs.weather()) drawWeatherCard(c, weatherCard);
-        drawPerformanceCard(c, performanceCard);
     }
 
     /** Square drawer button: symbol and name; an input with no device is dimmed. Focused: white, with dark text. */
@@ -2900,8 +2910,8 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             case WIDGETS:
                 if (!drawerOpen) return false;
                 if (i == 0) a11yRect.set(weatherCard);
-                else a11yRect.set((CONTENT_R - 470) * k, 300 * k, CONTENT_R * k, 610 * k);
-                dy = 0;
+                else a11yRect.set(homePerformanceCard);
+                dy = i == 0 ? 0 : heroLayer.getTranslationY();
                 break;
             default:
                 return false;
@@ -3165,6 +3175,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         applyTone();
         if (!picksOn()) {
             drawClock(c);
+            drawHomePerformance(c);
             drawCaption(c);
             if (HomeData.coinCount() > 0 || playingTab != null) drawQuotes(c);
             return;
@@ -3200,6 +3211,11 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         for (int i = 0; i < 3; i++) if (i != top) drawLightCard(c, i);
         if (top >= 0) drawLightCard(c, top);
         if (HomeData.coinCount() > 0 || playingTab != null) drawQuotes(c);
+        drawHomePerformance(c);
+    }
+
+    private void drawHomePerformance(Canvas c) {
+        drawPerformanceCard(c, homePerformanceCard);
     }
 
     private boolean picksOn() {
@@ -3328,6 +3344,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         if (measured != liveFps || oldMax != screenFps || !oldResolution.equals(screenResolution)) {
             liveFps = measured;
             drawerLayer.invalidate();
+            heroLayer.invalidate();
         }
         fpsWindowFrames = 0;
         fpsWindowStartNanos = frameTimeNanos;
