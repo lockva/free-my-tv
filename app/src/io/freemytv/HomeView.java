@@ -3295,13 +3295,8 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         c.drawText(Ui.tr("Frames per second"), leftX, r.top + 211 * k, performanceTitle);
         float gaugeLeft = leftX, gaugeTop = r.top + 238 * k;
         float gaugeRight = dividerX - 26 * k, gaugeBottom = gaugeTop + 9 * k;
-        performanceGauge.setColor(tone(0x221D1D1F, 0x33FFFFFF));
-        tmp.set(gaugeLeft, gaugeTop, gaugeRight, gaugeBottom);
-        c.drawRoundRect(tmp, 5 * k, 5 * k, performanceGauge);
-        performanceGauge.setColor(tone(0xFF188038, 0xFF49C878));
         float fpsProgress = liveFps < 0 ? 0 : Ui.clamp(liveFps / (float) Math.max(1, screenFps));
-        tmp.set(gaugeLeft, gaugeTop, gaugeLeft + (gaugeRight - gaugeLeft) * fpsProgress, gaugeBottom);
-        if (fpsProgress > 0) c.drawRoundRect(tmp, 5 * k, 5 * k, performanceGauge);
+        drawPerformanceGauge(c, gaugeLeft, gaugeTop, gaugeRight, gaugeBottom, fpsProgress);
         c.drawText(Ui.trf("Screen maximum: {n} Hz", "n", screenFps), leftX, r.top + 278 * k, performanceHint);
         performanceRule.setColor(tone(0x1F1D1D1F, 0x33FFFFFF));
         c.drawRect(dividerX, r.top + 26 * k, dividerX + k, r.bottom - 26 * k, performanceRule);
@@ -3311,9 +3306,32 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             String value = performance == null ? "--%" : i == 0 ? performance.cpuText
                     : i == 1 ? performance.memoryText : performance.storageText;
             float base = rowStart + i * rowGap;
+            float valueWidth = performanceValue.measureText(value);
+            float labelWidth = performanceLabel.measureText(PERFORMANCE_LABELS[i]);
             c.drawText(PERFORMANCE_LABELS[i], labelX, base, performanceLabel);
+            float resourceLeft = labelX + labelWidth + 12 * k;
+            float resourceRight = valueX - valueWidth - 12 * k;
+            float resourceCenterY = base - Ui.halfCap(performanceLabel);
+            float resourceTop = resourceCenterY - 4.5f * k;
+            int usage = performance == null ? -1 : i == 0 ? performance.cpu
+                    : i == 1 ? performance.memory : performance.storage;
+            drawPerformanceGauge(c, resourceLeft, resourceTop, resourceRight, resourceTop + 9 * k,
+                    usage < 0 ? 0 : Ui.clamp(usage / 100f));
             c.drawText(value, valueX, base, performanceValue);
         }
+    }
+
+    /** Same rounded track, thickness and theme-aware green as the FPS gauge. */
+    private void drawPerformanceGauge(Canvas c, float left, float top, float right, float bottom, float progress) {
+        if (right <= left) return;
+        float radius = 5 * k;
+        performanceGauge.setColor(tone(0x221D1D1F, 0x33FFFFFF));
+        tmp.set(left, top, right, bottom);
+        c.drawRoundRect(tmp, radius, radius, performanceGauge);
+        if (progress <= 0) return;
+        performanceGauge.setColor(tone(0xFF188038, 0xFF49C878));
+        tmp.set(left, top, left + (right - left) * Ui.clamp(progress), bottom);
+        c.drawRoundRect(tmp, radius, radius, performanceGauge);
     }
 
     private static String resolutionLabel(int width, int height) {
