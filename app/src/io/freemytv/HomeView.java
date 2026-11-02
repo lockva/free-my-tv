@@ -118,6 +118,13 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private int screenFps = 60;
     private int liveFps = -1, fpsWindowFrames;
     private long fpsWindowStartNanos;
+    private final Choreographer.FrameCallback fpsSampler = new Choreographer.FrameCallback() {
+        @Override public void doFrame(long frameTimeNanos) {
+            if (!running) return;
+            sampleFrameRate(frameTimeNanos);
+            Choreographer.getInstance().postFrameCallback(this);
+        }
+    };
     private final NowPlaying.Watch playing;
     private final Wallpaper wallpaper;
     private final Click click;
@@ -494,6 +501,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         invalidateAll();
         idle = false;
         Choreographer.getInstance().postFrameCallback(this);
+        Choreographer.getInstance().postFrameCallback(fpsSampler);
         spoken.readAgain();
     }
 
@@ -505,6 +513,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         handler.removeCallbacks(holdStart);
         okHeld = holdArmed = false;
         Choreographer.getInstance().removeFrameCallback(this);
+        Choreographer.getInstance().removeFrameCallback(fpsSampler);
         handler.removeCallbacks(tick);
         handler.removeCallbacks(reloadSoon);
         handler.removeCallbacks(bars);
@@ -770,7 +779,6 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
 
     @Override public void doFrame(long frameTimeNanos) {
         if (!running) return;
-        sampleFrameRate(frameTimeNanos);
         float dt = lastNanos == 0 ? 1 / 60f : Math.min(0.05f, (frameTimeNanos - lastNanos) / 1e9f);
         lastNanos = frameTimeNanos;
         long up = SystemClock.uptimeMillis();
@@ -1716,9 +1724,9 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             snap(drawerRects[i]);
             x += tw + gap;
         }
-        float cardsTop = CARDS_TOP * k, split = left + (right - left) * 0.585f;
+        float cardsTop = CARDS_TOP * k;
         boolean wx = Prefs.weather();
-        weatherCard.set(left, cardsTop, wx ? split - 16 * k : left, cardsTop + CARDS_H * k);
+        weatherCard.set(left, cardsTop, wx ? right : left, cardsTop + CARDS_H * k);
         snap(weatherCard);
         // The symbols at their sizes at rest and focused: drawing them never scales one.
         for (HomeApps.Item it : drawerItems) {
@@ -1737,7 +1745,8 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         float right = CONTENT_R * k;
         float width = (CONTENT_R - MARGIN) * 0.415f * k - 16 * k;
         float height = CARDS_H * k;
-        homePerformanceCard.set(right - width, (h - height) / 2f, right, (h + height) / 2f);
+        float centerY = L_CLOCK_BASE * k - Ui.halfCap(lClock);
+        homePerformanceCard.set(right - width, centerY - height / 2f, right, centerY + height / 2f);
         snap(homePerformanceCard);
     }
 
@@ -3332,7 +3341,6 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
 
     /** Counts the launcher's frame callbacks over one-second windows; no extra animation loop is started. */
     private void sampleFrameRate(long frameTimeNanos) {
-        if (!drawerOpen) return;
         if (fpsWindowStartNanos == 0) fpsWindowStartNanos = frameTimeNanos;
         fpsWindowFrames++;
         long elapsed = frameTimeNanos - fpsWindowStartNanos;
