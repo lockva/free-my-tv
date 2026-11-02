@@ -91,6 +91,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private static final float SHADOW_BLUR = 26, DEEP_BLUR = 30;
     private static final int SKY = 0, HERO = 1, STATUS = 2, PLATTER = 3, TILES = 4, DRAWER = 5, SHEET = 6, TOAST = 7;
     private static final int Z_STATUS = 0, Z_HERO = 1, Z_SHELF = 2, Z_DRAWER = 3;
+    private static final String PREF_SHELF_FOCUS = "shelfFocusPackage";
     private static final ExecutorService LOADER = Executors.newSingleThreadExecutor();
     // Light design (the L_ constants): title, tab bar, three recommendation cards and the shelf.
     // The tab bar is a 68 px capsule; the cards sit on the 5-column grid (the wide one spans 3).
@@ -278,6 +279,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private final Shadows shadows = new Shadows();
     private final Paint imageFill = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
     private final Paint border = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint shelfFocusBorder = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint rim = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint sheen = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint veil = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -523,12 +525,13 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         click.release();
     }
 
-    /** Starting state (Home pressed while the home screen is showing): first app focused, drawer and sheet closed. */
+    /** Home returns to the last focused shelf app, with the drawer and sheet closed. */
     void reset(boolean animated) {
         wake();
         cancelReorder(!animated);
         zone = Z_SHELF;
-        shelfIndex = 0;
+        int rememberedIndex = shelfIndex(ui.getString(PREF_SHELF_FOCUS, null), shelf);
+        if (rememberedIndex >= 0) shelfIndex = rememberedIndex;
         sheetOpen = false;
         drawerOpen = false;
         if (animated) {
@@ -1293,7 +1296,8 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
                 tileSlide[i] = new Spring(0.32f, 0.86f, 0);
                 tileRects[i] = new RectF();
             }
-            shelfIndex = Math.min(shelfIndex, Math.max(0, list.size() - 1));
+            int rememberedIndex = shelfIndex(ui.getString(PREF_SHELF_FOCUS, null), list);
+            shelfIndex = rememberedIndex >= 0 ? rememberedIndex : Math.min(shelfIndex, Math.max(0, list.size() - 1));
             retarget(true);
             layoutShelf();
         }
@@ -1309,7 +1313,8 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         // keeps its bottom edge, so with more apps it only gets lower.
         float tw = Math.min(L_TILE_H * 16f / 9 * k, (full - Math.max(0, n - 1) * gap) / Math.max(1, n));
         float th = tw * 9f / 16;
-        float width = n * tw + Math.max(0, n - 1) * gap, left = (w - width) / 2f;
+        float width = n * tw + Math.max(0, n - 1) * gap;
+        float left = (w - width) / 2f;
         float top = (L_PLATTER_TOP + L_TILE_H) * k - th;
         platterRect.set(left - pad, top, left + width + pad, top + th + 2 * pad);
         snap(platterRect);
@@ -1342,15 +1347,16 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
 
     /** Shelf layer: the glass bar and its shadow (it only changes with the background). */
     private void drawPlatter(Canvas c) {
-        if (shelf.isEmpty()) return;
-        float radius = (TILE_RADIUS + SHELF_PAD) * k;
-        tmp.set(platterRect);
-        tmp.offset(0, 18 * k);
-        shadow.setColor(tone(0x1F000000, 0x52000000));
-        shadows.draw(c, tmp, radius, SHADOW_BLUR * k, shadow);
-        // White glass by day; smoked glass at night.
-        scene.liquid(c, platterRect, radius, tone(0xFFFFFFFF, SMOKE), tone(0.42f, 0.12f), tone(0.03f, 0.08f),
-                tone(30, 34) * k, tone(22, 28) * k, tone(0.65f, 0.95f), 1);
+        if (!shelf.isEmpty()) {
+            float radius = (TILE_RADIUS + SHELF_PAD) * k;
+            tmp.set(platterRect);
+            tmp.offset(0, 18 * k);
+            shadow.setColor(tone(0x1F000000, 0x52000000));
+            shadows.draw(c, tmp, radius, SHADOW_BLUR * k, shadow);
+            // White glass by day; smoked glass at night.
+            scene.liquid(c, platterRect, radius, tone(0xFFFFFFFF, SMOKE), tone(0.42f, 0.12f), tone(0.03f, 0.08f),
+                    tone(30, 34) * k, tone(22, 28) * k, tone(0.65f, 0.95f), 1);
+        }
     }
 
     /** The quotes row's text and sizes, for one set of coins, prices and text size. */
@@ -1535,8 +1541,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
 
     /**
      * App icon like the ones in the tvOS 27 Dock: the brand color edge to edge (a soft gradient) with the logo.
-     * Focused: it grows 20% from the center, with a deep shadow (it "rises" toward the viewer) and a subtle glow at the
-     * top. No border and no reflection, as Apple does it.
+     * Focused: it grows 20% from the center, with a deep shadow, a white border and a subtle glow at the top.
      */
     private void drawShelfTile(Canvas c, int i) {
         HomeApps.Item it = shelf.get(i);
@@ -1591,6 +1596,18 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             drawLogo(c, it, cell, s, 0);
         } else {
             if (it.tile != null) roundImage(c, it.tile, it.tileShader, cell, r);
+        }
+        if (fc > 0.01f) {
+            float width = 4 * k, inset = width / 2;
+            tmp.set(cell);
+            tmp.inset(inset, inset);
+            shelfFocusBorder.setStyle(Paint.Style.STROKE);
+            shelfFocusBorder.setStrokeWidth(width + 2 * k);
+            shelfFocusBorder.setColor(Ui.alpha(0x99000000, fc));
+            c.drawRoundRect(tmp, Math.max(0, r - inset), Math.max(0, r - inset), shelfFocusBorder);
+            shelfFocusBorder.setStrokeWidth(width);
+            shelfFocusBorder.setColor(Ui.alpha(WHITE, fc));
+            c.drawRoundRect(tmp, Math.max(0, r - inset), Math.max(0, r - inset), shelfFocusBorder);
         }
     }
 
@@ -1990,6 +2007,12 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         revealShelf(snap);
         // Only the group whose focus changed is redrawn (moving along the shelf doesn't redraw the hero or capsule).
         boolean tilesChanged = aim(tileFocus, !sheetOpen && zone == Z_SHELF ? shelfIndex : -1, snap);
+        if (tilesChanged && !sheetOpen && zone == Z_SHELF && shelfIndex >= 0 && shelfIndex < shelf.size()) {
+            String pkg = shelf.get(shelfIndex).pkg;
+            if (pkg != null && !pkg.equals(ui.getString(PREF_SHELF_FOCUS, null))) {
+                ui.edit().putString(PREF_SHELF_FOCUS, pkg).apply();
+            }
+        }
         boolean statusChanged = aim(statusFocus, !sheetOpen && zone == Z_STATUS ? statusIndex : -1, snap);
         boolean drawerChanged = aim(drawerFocus, !sheetOpen && zone == Z_DRAWER ? drawerIndex : -1, snap);
         boolean heroChanged = heroFocus.target != (!sheetOpen && zone == Z_HERO ? 1 : 0);
@@ -2536,7 +2559,22 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         }
         boolean opened = HomeApps.open(activity, it, this, Math.round(r.left), Math.round(r.top),
                 Math.round(r.width()), Math.round(r.height()));
+        if (opened && it.kind == HomeApps.APP) rememberAppFocus(it.pkg);
         if (!opened) showToast(Ui.trf("Couldn't open {app}.", "app", it.label));
+    }
+
+    /** If an app opened elsewhere on the home is also on the shelf, focus it when Home returns. */
+    private void rememberAppFocus(String pkg) {
+        int index = shelfIndex(pkg, shelf);
+        if (index < 0) return;
+        shelfIndex = index;
+        ui.edit().putString(PREF_SHELF_FOCUS, pkg).apply();
+    }
+
+    private static int shelfIndex(String pkg, List<HomeApps.Item> apps) {
+        if (pkg == null) return -1;
+        for (int i = 0; i < apps.size(); i++) if (pkg.equals(apps.get(i).pkg)) return i;
+        return -1;
     }
 
     // MARK: - Holding OK: All Apps puts the app on the shelf or takes it off; on the shelf, the app is lifted to move
@@ -2861,7 +2899,8 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
                 break;
             case WIDGETS:
                 if (!drawerOpen) return false;
-                a11yRect.set(i == 0 ? weatherCard : performanceCard);
+                if (i == 0) a11yRect.set(weatherCard);
+                else a11yRect.set((CONTENT_R - 470) * k, 300 * k, CONTENT_R * k, 610 * k);
                 dy = 0;
                 break;
             default:
@@ -3219,20 +3258,16 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         performanceHint.setColor(tone(L_DIM, 0xADFFFFFF));
         performanceLabel.setColor(tone(L_DIM, 0xB3FFFFFF));
         performanceValue.setColor(drawerInk(0.95f));
-
         c.drawText(Ui.tr("Performance"), r.left + pad, top, performanceTitle);
         cardDimRight.setColor(tone(L_FAINT, 0x99FFFFFF));
         c.drawText("MiTV-AYFR0", r.right - pad, top, cardDimRight);
         c.drawText(Ui.trf("Resolution: {value}", "value", screenResolution), r.left + pad, top + 28 * k, performanceMeta);
-
-        float leftX = r.left + pad;
-        float numberBase = r.top + 177 * k;
+        float leftX = r.left + pad, numberBase = r.top + 177 * k;
         String fps = liveFps < 0 ? "--" : String.valueOf(liveFps);
         c.drawText(fps, leftX, numberBase, performanceFps);
         float fpsWidth = performanceFps.measureText(fps);
         c.drawText("FPS", leftX + fpsWidth + 8 * k, numberBase - 9 * k, performanceUnit);
         c.drawText(Ui.tr("Frames per second"), leftX, r.top + 211 * k, performanceTitle);
-
         float gaugeLeft = leftX, gaugeTop = r.top + 238 * k;
         float gaugeRight = dividerX - 26 * k, gaugeBottom = gaugeTop + 9 * k;
         performanceGauge.setColor(tone(0x221D1D1F, 0x33FFFFFF));
@@ -3243,7 +3278,6 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         tmp.set(gaugeLeft, gaugeTop, gaugeLeft + (gaugeRight - gaugeLeft) * fpsProgress, gaugeBottom);
         if (fpsProgress > 0) c.drawRoundRect(tmp, 5 * k, 5 * k, performanceGauge);
         c.drawText(Ui.trf("Screen maximum: {n} Hz", "n", screenFps), leftX, r.top + 278 * k, performanceHint);
-
         performanceRule.setColor(tone(0x1F1D1D1F, 0x33FFFFFF));
         c.drawRect(dividerX, r.top + 26 * k, dividerX + k, r.bottom - 26 * k, performanceRule);
         float labelX = dividerX + 24 * k, valueX = r.right - pad;

@@ -65,7 +65,7 @@ public class HomeActivity extends Activity {
         super.onPause();
     }
 
-    /** Home button pressed on the home screen: back to the entry state (focus on the first app, sheet closed). */
+    /** Home button pressed: return to the entry state, preserving the last focused shelf app. */
     @Override protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
         if (home == null) return;
