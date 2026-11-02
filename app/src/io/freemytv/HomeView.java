@@ -3301,16 +3301,19 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         performanceRule.setColor(tone(0x1F1D1D1F, 0x33FFFFFF));
         c.drawRect(dividerX, r.top + 26 * k, dividerX + k, r.bottom - 26 * k, performanceRule);
         float labelX = dividerX + 24 * k, valueX = r.right - pad;
+        float labelColumn = 0;
+        for (String label : PERFORMANCE_LABELS) {
+            labelColumn = Math.max(labelColumn, performanceLabel.measureText(label));
+        }
+        float valueColumn = performanceValue.measureText("100%");
         float rowStart = r.top + 112 * k, rowGap = 68 * k;
         for (int i = 0; i < PERFORMANCE_LABELS.length; i++) {
             String value = performance == null ? "--%" : i == 0 ? performance.cpuText
                     : i == 1 ? performance.memoryText : performance.storageText;
             float base = rowStart + i * rowGap;
-            float valueWidth = performanceValue.measureText(value);
-            float labelWidth = performanceLabel.measureText(PERFORMANCE_LABELS[i]);
             c.drawText(PERFORMANCE_LABELS[i], labelX, base, performanceLabel);
-            float resourceLeft = labelX + labelWidth + 12 * k;
-            float resourceRight = valueX - valueWidth - 12 * k;
+            float resourceLeft = labelX + labelColumn + 12 * k;
+            float resourceRight = valueX - valueColumn - 12 * k;
             float resourceCenterY = base - Ui.halfCap(performanceLabel);
             float resourceTop = resourceCenterY - 4.5f * k;
             int usage = performance == null ? -1 : i == 0 ? performance.cpu
